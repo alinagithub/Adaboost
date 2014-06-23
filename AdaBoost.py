@@ -11,219 +11,264 @@ import matplotlib.pyplot as plt
 from numpy import arange
 import random as rnd
 import sys    
+import matplotlib.cm as cm
 
  
 class AdaBoost:
  
-    def __init__(self, training_set):
+    def __init__(self, training_set, testing_set):
+        
         self.training_set = training_set
-        self.N = len(self.training_set)
-        self.weights = ones(self.N)/self.N
+        self.testing_set  = testing_set
+        
+        self.weights    = []
+
         self.RULES      = []
-        self.RULEDEF    = []
-        self.RULEINDEX  = []
+        self.RULESINDEX = []
+        
         self.ALPHA      = []
+        
         self.LEARNER    = []
-        self.ERROR      = []
-        self.ERROREVAL  = []
- 
-    def set_rule(self, func, test=False):
+        self.LEARNERDEF = []
         
+        self.ERRORTEST  = []
+        self.ERRORTRAIN = []
+        self.ERRORUPPER = []
+        
+
+    def get_funcerror(self, func):
         errors = array([t[1]!=func(t[0]) for t in self.training_set])
-        e = (errors*self.weights).sum()
+        return (errors*self.weights).sum()
         
-        if test: return e
+    def set_rule(self, func):
+        
+        e = self.get_funcerror(func)        
         alpha = 0.5 * log((1-e)/e)
-        print 'e=%.10f a=%.10f'%(e, alpha)
-        w = zeros(self.N)
-        for i in range(self.N):
-            if errors[i] == 1: w[i] = self.weights[i] * exp(alpha)
-            else: w[i] = self.weights[i] * exp(-alpha)
-        self.weights = w / w.sum()
+    
+        for i, t in enumerate(self.training_set):
+            self.weights[i] = self.weights[i]*exp(-alpha*t[1]*func(t[0]))
+    
+        Z = self.weights.sum()
+        self.weights = self.weights / Z
+        
         self.RULES.append(func)
         self.ALPHA.append(alpha)
-        return e
+        
+        return Z
         
     def add_learner(self, func):
         self.LEARNER.append(func)
+    
+    def add_learner_def(self, dim, value, sign):
+        self.LEARNERDEF.append((dim, value, sign))
         
-    def partitionInf(self, i, n) : return lambda x: 2*(x[i] < n)-1
-    def partitionSup(self, i, n) : return lambda x: 2*(x[i] > n)-1
+    def build_stump_inf(self, dim, value) : return lambda x: 2*(x[dim] < value)-1
+    
+    def build_stump_sup(self, dim, value) : return lambda x: 2*(x[dim] > value)-1
+        
+    def add_stumps(self):
+        for dim in range(len(self.training_set[0][0])):
+            for t, l in self.training_set:
+                self.add_learner(self.build_stump_inf(dim, t[dim]))
+                self.add_learner(self.build_stump_sup(dim, t[dim]))
+                self.add_learner_def(dim, t[dim], 'inf')
+                self.add_learner_def(dim, t[dim], 'sup')
+                
+                
+    def evaluate(self, data):
 
+        hx = [self.ALPHA[i]*self.RULES[i](data) for i in range(len(self.RULES))]
+        s = sum(hx)        
+        c = s/sum(self.ALPHA)      
+        r = sign(s)
         
-    def add_partition_learner(self, index, min, max, step):
-        for kk in arange(min, max, step):
-            m.add_learner(self.partitionInf(index, kk))
-            m.add_learner(self.partitionSup(index, kk))
-            self.RULEDEF.append((index,kk,0))
-            self.RULEDEF.append((index,kk,1))
+        return (r, absolute(c))
+        
+        
+    def test(self):
+        
+        rate=zeros(2)
+        
+        for (x,l) in self.testing_set:
+            res = self.evaluate(x)
+
+            if (sign(l) != sign(res[0])) :
+                rate[sign(l)] = rate[sign(l)] +1 
+                
+        print " - test_0:" + str(rate[0]) + " test_1:"+str(rate[1]) + " total :" + str(rate[0]+rate[1]) + " over:" + str(len(self.training_set))
+        return rate
+                
+    def train(self, iter=100, drawit=False):
+        
+        self.ERRORTRAIN=[]
+        self.ERRORTEST=[]
+        
+        if len(self.LEARNER)==0:
+            return False
+        
+        if len(self.training_set)==0:
+            return False
+        
+        nb_class_pos = (array([1 for t,l in self.training_set if sign(l)>0])).sum()
+        nb_class_neg = (array([1 for t,l in self.training_set if sign(l)<0])).sum() 
+        
+        self.weights = ones(len(self.training_set))
+        
+        for i,t in enumerate(self.training_set):
+            if(sign(t[1])>0):
+                self.weights[i] = 1.0 / float(2.0*nb_class_pos)
+            else:
+                self.weights[i] = 1.0 / float(2.0*nb_class_neg)
+         
+         
+        for t in range(0, iter):
+            
+            print "Training iteration: " + str(t)
+            
+            err_learner = array([self.get_funcerror(cur_learner) for cur_learner in self.LEARNER])
+            min_index = (where(err_learner == err_learner.min()))[0][0]        
+            min_error = err_learner[min_index]
+            
+            if(min_error>=0.5):
+                return False
+            
+            print " - min_error:" + str(min_error) + " @ " + str(min_index) + " learner_info:" + str(self.LEARNERDEF[min_index]) 
+            
+            
+            Zt = self.set_rule(self.LEARNER[min_index])
+            self.RULESINDEX.append(min_index)
+            
+            self.ERRORTRAIN.append(min_error)
+
+            self.ERRORUPPER.append(Zt)
+            
+            test_res = self.test()
+            self.ERRORTEST.append((test_res[0]+test_res[1])*100.0/len(self.training_set))
+            
+            if t>0:
+                self.ERRORUPPER[t] = self.ERRORUPPER[t]*self.ERRORUPPER[t-1]
+            
+            if drawit:
+                self.draw()
+                
+            #sys.stdin.read(1)
+    
+        return True
+        
             
     def draw(self):
-        wgreenx = []
-        wgreeny = []
-        wredx   = []
-        wredy   = []
-        fgreenx = []
-        fgreeny = []
-        fredx   = []
-        fredy   = []
+        pass_h_c0_x = []
+        pass_h_c0_y = []
+        pass_l_c0_x = []
+        pass_l_c0_y = []
+        pass_h_c1_x = []
+        pass_h_c1_y = []
+        pass_l_c1_x = []
+        pass_l_c1_y = []
+        fail_c0_x   = []
+        fail_c0_y   = []
+        fail_c1_x   = []
+        fail_c1_y   = []
         
-        for t, l in self.training_set:
-            hx = [self.ALPHA[i]*self.RULES[i](t) for i in range(len(self.RULES))]
-            if (sign(l) == sign(sum(hx))):
-                if l==1:
-                    wgreenx.append(t[0])
-                    wgreeny.append(t[1])
-                else:
-                    wredx.append(t[0])
-                    wredy.append(t[1])
-            else:
-                if l==1:
-                    fgreenx.append(t[0])
-                    fgreeny.append(t[1])
-                else:
-                    fredx.append(t[0])
-                    fredy.append(t[1])
-                
-        fig, ax = plt.subplots()
-        ax.plot(wgreenx, wgreeny, 'g+', wredx, wredy, 'r+')
-        ax.plot(fgreenx, fgreeny, 'go', fredx, fredy, 'ro')
+        c_level = 0.1
         
-        for idx in self.RULEINDEX:
-            r = self.RULEDEF[idx]
-            xx=[]
-            yy=[]
-            if r[0]==0:
-                xx=[r[1] for x in range(200)]
-                yy=range(-100, 100)
+        for t, l in self.testing_set:
+            res = self.evaluate(t)
+            if sign(l)>0:
+                if sign(res[0])>0:
+                    if(res[1]>c_level):
+                        pass_h_c0_x.append(t[0])
+                        pass_h_c0_y.append(t[1])
+                    else:
+                        pass_l_c0_x.append(t[0])
+                        pass_l_c0_y.append(t[1])
+                else:
+                    fail_c0_x.append(t[0])
+                    fail_c0_y.append(t[1])
             else:
-                yy=[r[1] for x in range(200)]
-                xx=range(-100, 100)
+                if sign(res[0])<0:
+                    if(res[1]>c_level):
+                        pass_h_c1_x.append(t[0])
+                        pass_h_c1_y.append(t[1])
+                    else:
+                        pass_l_c1_x.append(t[0])
+                        pass_l_c1_y.append(t[1])
+                else:
+                    fail_c1_x.append(t[0])
+                    fail_c1_y.append(t[1])
                 
-            if(r[2]==0):
-                ax.plot(xx,yy,'y')
-            else:
-                ax.plot(xx,yy,'c')
+        fig, ax = plt.subplots()        
+        ax.plot(pass_l_c0_x, pass_l_c0_y, 'c+', pass_l_c1_x, pass_l_c1_y, 'm+')
+        ax.plot(pass_h_c0_x, pass_h_c0_y, 'g+', pass_h_c1_x, pass_h_c1_y, 'r+')        
+        ax.plot(fail_c0_x, fail_c0_y, 'go', fail_c1_x, fail_c1_y, 'ro')
 
         fig2, ax2 = plt.subplots()
-        ax2.plot(self.ERROR, 'r-')
-        ax2.set_ylabel('IterError', color='r')
+        ax2.plot(self.ERRORTRAIN, 'r-', self.ERRORUPPER, 'c-')
+        ax2.set_ylabel('Error (r) Upper (c)', color='b')
         ax3 = ax2.twinx()
-        ax3.plot(self.ERROREVAL, 'g-')
-        ax3.set_ylabel('EvalError', color='g')
+        ax3.plot(self.ERRORTEST, 'g-')
+        ax3.set_ylabel('TestError %', color='g')
+        
+        
+        z = [[0 for ni in range(300)] for mi in range(300)]
+        l = [[0 for ni in range(300)] for mi in range(300)]
+        
+        for x in range(-150, 150):
+            for y in range(-150, 150):
+                z[150-y-1][x+150]=(self.evaluate((x,y)))[1]
+                l[150-y-1][x+150]=(self.evaluate((x,y)))[0]
+        
+        plt.figure()
+        plt.imshow(z, interpolation='bilinear', cmap=cm.jet)
+        plt.title('Confidence map')
+        plt.gcf()
+        plt.clim()
+        
+        plt.figure()
+        plt.imshow(l, interpolation='bilinear', cmap=cm.jet)
+        plt.title('Classification map')
+        plt.gcf()
+        plt.clim()
         
         plt.show()
-        
-        
-    def train(self, iter):
-        self.ERROR=[]
-        self.ERROREVAL=[]
-        
-        if len(self.LEARNER)<=0:
-            return False
-         
-        for i in range(0, iter):
-            print "adaboost iter: " + str(i)
-            
-            err = 1.0
-            best_learner=[]
-            bestindex=0
-            curbesterr=0.5
-            
-            for index, curlearner in enumerate(self.LEARNER):
-                
-                print self.RULEDEF[index]
-                
-                curerr = self.set_rule(curlearner, True)
-                
-                print "  -> err = " + str(curerr)
-                
-                if (curerr<curbesterr):
-                    curbesterr=curerr
-                
-                if (curerr<err):
-                    best_learner=curlearner
-                    err=curerr
-                    bestindex=index
-
-            print "best error is " + str(curbesterr)
-            if curbesterr>=0.499990:
-                return self.ERROR
-            
-            print "selected leaner is " + str(bestindex)
-            print "selected rule is " + str(self.RULEDEF[bestindex])
-            self.RULEINDEX.append(bestindex)
-            newerr = self.set_rule(best_learner, False)
-            self.ERROR.append(newerr*100)
-            
-            self.ERROREVAL.append(self.evaluate())
-            
-            self.draw()
-            
-            #sys.stdin.read(1)
-            
-            #self.evaluate()
-        
-        return self.evaluate()
-                
- 
-    def evaluate(self):
-        NR = len(self.RULES)
-        f=0
-        g=0
-        for (x,l) in self.training_set:
-            hx = [self.ALPHA[i]*self.RULES[i](x) for i in range(NR)]
-            #fx = sum(hx)/sum(self.ALPHA)
-            if (sign(l) != sign(sum(hx))) and sign(l)==1:
-                f=f+1
-            if (sign(l) != sign(sum(hx))) and sign(l)==0:
-                g=g+1
-        print "eval is " + str(f) + " and "+ str(g) 
-        rate = (f+g)*100.0/len(self.training_set)
-        print "rate " + str(rate)
-        return rate
-        
+   
          
 if __name__ == '__main__':
  
-    examples = []
+    train_set = []
+    test_set  = []
     
-    tr = [(rnd.randrange(-100, 100), rnd.randrange(-100, 100)) for x in range(1000)]
-    nb_data = 1000;
+    nb_data = 500;
     cur=0
     while (cur<nb_data):
         x=(rnd.randrange(-100, 100), rnd.randrange(-100, 100))
-        if not((x[0]>-30) and (x[0]<30) and (x[1]>-10) and (x[1]<10)):
-            examples.append((x, 1))
+        dist = sqrt(x[0]*x[0]+x[1]*x[1])
+        if (dist>50) or (dist<20):
+            train_set.append((x, 1))
             cur=cur+1
             
+    nb_data = 50;
     cur=0
     while (cur<nb_data):
-        x=(rnd.randrange(-30, 30), rnd.randrange(-30, 30))
-        if (x[0]>-30) and (x[0]<30) and (x[1]>-10) and (x[1]<10):
-            examples.append((x, -1))
+        x=(rnd.randrange(-100, 100), rnd.randrange(-100, 100))
+        dist = sqrt(x[0]*x[0]+x[1]*x[1])
+        if (dist<50) and (dist>20):
+            train_set.append((x, -1))
             cur=cur+1
-         
-    print("NEW")
-    m = AdaBoost(examples)
-    print("   -add learners")
 
-    m.add_partition_learner(0, -100, 100, 5)
-    m.add_partition_learner(1, -100, 100, 5)
+    train_set.append(((-150,-150), 1))
+    train_set.append(((150,150), 1))
     
-        
-    #m.add_learner(lambda x: 2*(x[0] < 1.5)-1)
-    #m.add_learner(lambda x: 2*(x[0] < 4.5)-1)
-    #m.add_learner(lambda x: 2*(x[1] > 5)-1)
-        
-    print("   -train")
-    e=m.train(100)
-    plt.plot(e)
+    test_set = train_set
+         
+    print("--- NEW ---")
     
-    m.draw()
+    m = AdaBoost(train_set, test_set)
+
+
+    m.add_stumps()
         
-    print("   -evaluate")
-    m.evaluate()
+    e=m.train(500, True)
     
     
  
